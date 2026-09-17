@@ -6,7 +6,6 @@ import threading
 from datetime import datetime
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
-import pdfplumber
 import fitz  # PyMuPDF
 from PIL import Image, ImageTk
 from docx import Document
@@ -17,46 +16,34 @@ import database
 
 database.init_db()
 
-# --- Yordamchi Funksiyalar ---
+# --- Xavfsiz Yordamchi Funksiyalar ---
 def calculate_md5(file_path):
-    hasher = hashlib.md5()
-    with open(file_path, "rb") as f:
-        while chunk := f.read(65536):
-            hasher.update(chunk)
-    return hasher.hexdigest()
+    try:
+        hasher = hashlib.md5()
+        with open(file_path, "rb") as f:
+            while chunk := f.read(65536):
+                hasher.update(chunk)
+        return hasher.hexdigest()
+    except Exception:
+        return ""
 
 def extract_pdf_data(pdf_path):
     full_text = ""
     pages_text = []
     try:
-        # 1-bosqich: Oddiy matn sifatida o'qish (pdfplumber)
-        with pdfplumber.open(pdf_path) as pdf:
-            for page in pdf.pages:
-                txt = page.extract_text() or ""
-                pages_text.append(txt)
-                full_text += txt + "\n"
-
-        # 2-bosqich: Agar matn topilmasa (skaner bo'lsa), PyMuPDF orqali chuqur qatlamni o'qish
-        if not full_text.strip():
-            full_text = ""
-            pages_text = []
-            doc = fitz.open(pdf_path)
-            for page in doc:
-                txt = page.get_text("text") or ""
-                pages_text.append(txt)
-                full_text += txt + "\n"
-
-        # 3-bosqich: Agar mutlaqo matn bo'lmasa (toza rasm/skaner), fayl nomidagi ma'lumotlarni tahlilga berish
-        if not full_text.strip():
-            file_name = os.path.basename(pdf_path)
-            full_text = f"Hujjat fayl nomi: {file_name}. Ushbu hujjat skaner qilingan rasm bo'lib, uning mazmuni va toifasini fayl nomidagi so'zlar va belgilarga qarab aniqlang."
-            pages_text = [f"[Skanerlangan rasm shaklidagi hujjat: {file_name}]"]
-
+        doc = fitz.open(pdf_path)
+        for page in doc:
+            txt = page.get_text("text") or ""
+            pages_text.append(txt)
+            full_text += txt + "\n"
+        doc.close()
     except Exception as e:
-        print(f"Xato matn o'qishda: {e}")
+        print(f"PDF o'qishda xatolik: {e}")
+
+    if not full_text.strip():
         file_name = os.path.basename(pdf_path)
         full_text = f"Hujjat fayl nomi: {file_name}"
-        pages_text = [f"Fayl nomi: {file_name}"]
+        pages_text = [f"Fayl nomi: {file_name}\n(Skanerlangan hujjat)"]
 
     return full_text.strip(), pages_text
 
@@ -65,118 +52,131 @@ def export_pdf_to_word(pages_text, target_docx_path):
         doc = Document()
         for idx, page_txt in enumerate(pages_text, 1):
             doc.add_heading(f"Sahifa {idx}", level=2)
-            doc.add_paragraph(page_txt.strip() if page_txt.strip() else "[Matn aniqlanmadi yoki skaner rasm]")
+            doc.add_paragraph(page_txt.strip() if page_txt.strip() else "[Matn aniqlanmadi]")
             if idx < len(pages_text):
                 doc.add_page_break()
         doc.save(target_docx_path)
     except Exception as e:
         print(f"Word yaratishda xato: {e}")
 
-def analyze_with_ai(text):
+def parse_filename_fallback(file_name):
+    """AI javob bermasa yoki xato bersa, fayl nomidan toifani aniqlash"""
+    now = datetime.now()
+    year, month, day = str(now.year), f"{now.month:02d}", f"{now.day:02d}"
+    
+    # Sanani qidirish
+    date_m = re.search(r"(\d{4})[_\-\.](\d{2})[_\-\.](\d{2})", file_name)
+    if date_m:
+        year, month, day = date_m.groups()
+
+    # Hujjat turini qidirish
+    fn_lower = file_name.lower()
+    doc_type = "Boshqa"
+    if "buyruq" in fn_lower:
+        doc_type = "Buyruqlar"
+    elif "topshiriq" in fn_lower:
+        doc_type = "Topshiriqlar"
+    elif "xat" in fn_lower:
+        doc_type = "Xatlar"
+    elif "ariza" in fn_lower:
+        doc_type = "Arizalar"
+    elif "taqdimnoma" in fn_lower:
+        doc_type = "Taqdimnomalar"
+
+    return "Toshkent_shahri", "Kadastr_Agentligi", doc_type, year, month, day, "Noma'lum"
+
+def analyze_with_ai(text, file_name):
     prompt = f"""
-Quyidagi rasmiy hujjat matnini yoki nomini tahlil qiling va qat'iy quyidagi kalitlar bo'yicha javob bering:
-1. HUDUD: ({', '.join(config.REGIONS)}) orasidan eng mosi. Agar aniq bo'lmasa: Toshkent_shahri
-2. TASHKILOT: (Kadastr_Agentligi, Davlat_Kadastrlari_Palatasi, Bosh_Prokuratura, IIV, DXX, Sudlar, Boshqa_Organlar)
-3. TUR: (Buyruqlar, Topshiriqlar, Xatlar, Taqdimnomalar, Arizalar, Boshqa)
-4. SANA: Hujjat qabul qilingan sana (Format: YYYY-MM-DD. Agar topilmasa: {datetime.now().strftime('%Y-%m-%d')})
-5. RAQAM: Hujjatning qayd raqami (masalan: 12-son, 04/18-22. Topilmasa: Nomsiz)
+Quyidagi rasmiy hujjat matni yoki nomini tahlil qiling:
+Fayl nomi: {file_name}
+Matn: {text[:2000]}
 
-Javobni FAQAT quyidagi formatda qaytaring:
-HUDUD: <natija>
-TASHKILOT: <natija>
-TUR: <natija>
-SANA: <YYYY-MM-DD>
-RAQAM: <natija>
-
-Hujjat matni:
-{text[:3000]}
+Javobni FAQAT quyidagi kalitlar bilan yozing:
+HUDUD: ({', '.join(config.REGIONS)} orasidan biri)
+TASHKILOT: (Kadastr_Agentligi, Davlat_Kadastrlari_Palatasi, Bosh_Prokuratura, IIV, DXX, Sudlar, Boshqa_Organlar)
+TUR: (Buyruqlar, Topshiriqlar, Xatlar, Taqdimnomalar, Arizalar, Boshqa)
+SANA: (YYYY-MM-DD formatida)
+RAQAM: (hujjat raqami)
 """
     try:
-        response = ollama.chat(
+        # 8 soniyada javob bermasa fallback ishlaydi
+        client = ollama.Client(timeout=8)
+        response = client.chat(
             model="llama3.2:1b",
             messages=[{"role": "user", "content": prompt}]
         )
         lines = response["message"]["content"].strip().split("\n")
-        data = {
-            "HUDUD": "Toshkent_shahri",
-            "TASHKILOT": "Kadastr_Agentligi",
-            "TUR": "Xatlar",
-            "SANA": datetime.now().strftime("%Y-%m-%d"),
-            "RAQAM": "Noma'lum"
-        }
-        for line in lines:
-            for k in data.keys():
-                if line.startswith(f"{k}:"):
-                    val = line.replace(f"{k}:", "").strip()
-                    if val:
-                        data[k] = val
-
-        sana_match = re.search(r"(\d{4})-(\d{2})-(\d{2})", data["SANA"])
-        if sana_match:
-            year, month, day = sana_match.groups()
-        else:
-            now = datetime.now()
-            year, month, day = str(now.year), f"{now.month:02d}", f"{now.day:02d}"
-
-        return data["HUDUD"], data["TASHKILOT"], data["TUR"], year, month, day, data["RAQAM"]
-    except Exception as e:
-        print(f"AI Xatolik: {e}")
+        
+        region = "Toshkent_shahri"
+        org = "Kadastr_Agentligi"
+        doc_type = "Boshqa"
         now = datetime.now()
-        return "Toshkent_shahri", "Kadastr_Agentligi", "Boshqa", str(now.year), f"{now.month:02d}", f"{now.day:02d}", "Noma'lum"
+        year, month, day = str(now.year), f"{now.month:02d}", f"{now.day:02d}"
+        doc_num = "Noma'lum"
 
-# --- PDF Viewer & AI Chat Oynasi ---
+        for line in lines:
+            line_str = line.strip()
+            if line_str.startswith("HUDUD:"):
+                val = line_str.replace("HUDUD:", "").strip()
+                for r in config.REGIONS:
+                    if r.lower() in val.lower():
+                        region = r
+                        break
+            elif line_str.startswith("TASHKILOT:"):
+                val = line_str.replace("TASHKILOT:", "").strip()
+                for o in config.ORGANIZATIONS + config.LAW_ENFORCEMENT:
+                    if o.lower() in val.lower():
+                        org = o
+                        break
+            elif line_str.startswith("TUR:"):
+                val = line_str.replace("TUR:", "").strip()
+                for t in config.DOC_TYPES:
+                    if t.lower() in val.lower():
+                        doc_type = t
+                        break
+            elif line_str.startswith("SANA:"):
+                val = line_str.replace("SANA:", "").strip()
+                sm = re.search(r"(\d{4})-(\d{2})-(\d{2})", val)
+                if sm:
+                    year, month, day = sm.groups()
+            elif line_str.startswith("RAQAM:"):
+                doc_num = line_str.replace("RAQAM:", "").strip() or "Noma'lum"
+
+        return region, org, doc_type, year, month, day, doc_num
+    except Exception as e:
+        print(f"AI ishlamadi, zaxira rejim qo'llanildi: {e}")
+        return parse_filename_fallback(file_name)
+
+# --- PDF Viewer Oynasi ---
 class ModernPDFViewer(tk.Toplevel):
     def __init__(self, parent, pdf_path):
         super().__init__(parent)
-        self.title(f"Hujjat Ko'rish va AI Chat: {os.path.basename(pdf_path)}")
-        self.geometry("1150x850")
+        self.title(f"Hujjat: {os.path.basename(pdf_path)}")
+        self.geometry("900x800")
         self.configure(bg="#0f172a")
         self.pdf_path = pdf_path
         self.doc = fitz.open(pdf_path)
         self.current_page = 0
-        self.zoom = 1.15
 
-        paned = tk.PanedWindow(self, orient="horizontal", bg="#1e293b", sashwidth=4)
-        paned.pack(fill="both", expand=True)
-
-        left_frame = tk.Frame(paned, bg="#0f172a")
-        paned.add(left_frame, minsize=700)
-
-        nav = tk.Frame(left_frame, bg="#1e293b", pady=8)
+        nav = tk.Frame(self, bg="#1e293b", pady=8)
         nav.pack(fill="x")
         tk.Button(nav, text="◀ Oldingi", command=self.prev_p, bg="#334155", fg="white", relief="flat").pack(side="left", padx=10)
         self.lbl_p = tk.Label(nav, text="", bg="#1e293b", fg="#38bdf8", font=("Segoe UI", 10, "bold"))
         self.lbl_p.pack(side="left", padx=10)
         tk.Button(nav, text="Keyingi ▶", command=self.next_p, bg="#334155", fg="white", relief="flat").pack(side="left", padx=10)
-        tk.Button(nav, text="Word (.docx) yuklash", command=self.manual_word_export, bg="#0284c7", fg="white", relief="flat").pack(side="right", padx=10)
+        tk.Button(nav, text="Tashqi dasturda ochish", command=lambda: os.startfile(self.pdf_path), bg="#0284c7", fg="white", relief="flat").pack(side="right", padx=10)
 
-        self.canvas = tk.Canvas(left_frame, bg="#334155", highlightthickness=0)
-        sc = tk.Scrollbar(left_frame, orient="vertical", command=self.canvas.yview)
+        self.canvas = tk.Canvas(self, bg="#334155", highlightthickness=0)
+        sc = tk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=sc.set)
         sc.pack(side="right", fill="y")
         self.canvas.pack(fill="both", expand=True)
-
-        right_frame = tk.Frame(paned, bg="#0f172a", padx=10, pady=10)
-        paned.add(right_frame, minsize=400)
-
-        tk.Label(right_frame, text="💬 Hujjat bo'yicha AI Chat", font=("Segoe UI", 12, "bold"), fg="#38bdf8", bg="#0f172a").pack(anchor="w", pady=(0, 5))
-        self.chat_history = tk.Text(right_frame, bg="#1e293b", fg="#f8fafc", font=("Consolas", 10), wrap="word", relief="flat", padx=10, pady=10)
-        self.chat_history.pack(fill="both", expand=True)
-        self.chat_history.insert("end", "AI: Ushbu hujjat bo'yicha savollaringizni yozishingiz mumkin.\n")
-        self.chat_history.config(state="disabled")
-
-        chat_input_frame = tk.Frame(right_frame, bg="#0f172a", pady=5)
-        chat_input_frame.pack(fill="x")
-        self.chat_entry = tk.Entry(chat_input_frame, bg="#1e293b", fg="white", font=("Segoe UI", 11), relief="flat", insertbackground="white")
-        self.chat_entry.pack(side="left", fill="x", expand=True, padx=(0, 5), ipady=4)
-        self.chat_entry.bind("<Return>", lambda e: self.send_chat())
-        tk.Button(chat_input_frame, text="Yuborish", command=self.send_chat, bg="#38bdf8", fg="#0f172a", font=("Segoe UI", 10, "bold"), relief="flat").pack(side="right")
 
         self.render()
 
     def render(self):
         page = self.doc.load_page(self.current_page)
-        pix = page.get_pixmap(matrix=fitz.Matrix(self.zoom, self.zoom))
+        pix = page.get_pixmap(matrix=fitz.Matrix(1.1, 1.1))
         img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
         self.photo = ImageTk.PhotoImage(img)
         self.canvas.delete("all")
@@ -194,43 +194,12 @@ class ModernPDFViewer(tk.Toplevel):
             self.current_page -= 1
             self.render()
 
-    def manual_word_export(self):
-        dest = filedialog.asksaveasfilename(defaultextension=".docx", filetypes=[("Word", "*.docx")])
-        if dest:
-            _, pages = extract_pdf_data(self.pdf_path)
-            export_pdf_to_word(pages, dest)
-            messagebox.showinfo("Bajarildi", "Word fayli saqlandi!")
-
-    def send_chat(self):
-        query = self.chat_entry.get().strip()
-        if not query:
-            return
-        self.chat_entry.delete(0, "end")
-        self.append_chat(f"Siz: {query}\n")
-        threading.Thread(target=self.query_ai_bg, args=(query,), daemon=True).start()
-
-    def query_ai_bg(self, query):
-        full_txt, _ = extract_pdf_data(self.pdf_path)
-        prompt = f"Hujjat mazmuni:\n{full_txt[:4000]}\n\nFoydalanuvchi savoli: {query}\nJavobni o'zbek tilida lo'nda va aniq bering."
-        try:
-            res = ollama.chat(model="llama3.2:1b", messages=[{"role": "user", "content": prompt}])
-            reply = res["message"]["content"].strip()
-        except Exception as e:
-            reply = f"Xatolik: {e}"
-        self.append_chat(f"AI: {reply}\n\n")
-
-    def append_chat(self, msg):
-        self.chat_history.config(state="normal")
-        self.chat_history.insert("end", msg)
-        self.chat_history.see("end")
-        self.chat_history.config(state="disabled")
-
-# --- Asosiy Zamonaviy Dastur ---
+# --- Asosiy Dastur ---
 class MasterApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Smart Kadastr & Organlar Arxiv Tizimi (AI Integrated)")
-        self.geometry("1240x820")
+        self.title("Smart Kadastr & Organlar Arxiv Tizimi")
+        self.geometry("1180x760")
         self.configure(bg="#0f172a")
 
         self.setup_styles()
@@ -244,11 +213,11 @@ class MasterApp(tk.Tk):
         self.tab_search = ttk.Frame(self.notebook)
         self.tab_admin = ttk.Frame(self.notebook)
 
-        self.notebook.add(self.tab_dash, text=" 📊 Zamonaviy Dashboard ")
-        self.notebook.add(self.tab_upload, text=" 📥 Hujjatlarni Saralash & Word ")
-        self.notebook.add(self.tab_explorer, text=" 📂 Dynamic Vaqtli Arxiv ")
-        self.notebook.add(self.tab_search, text=" 🔍 Qidiruv & Eksport ")
-        self.notebook.add(self.tab_admin, text=" ⚙️ Tizim Boshqaruvi ")
+        self.notebook.add(self.tab_dash, text=" 📊 Dashboard ")
+        self.notebook.add(self.tab_upload, text=" 📥 Hujjatlarni Saralash ")
+        self.notebook.add(self.tab_explorer, text=" 📂 Arxiv Explorer ")
+        self.notebook.add(self.tab_search, text=" 🔍 Qidiruv ")
+        self.notebook.add(self.tab_admin, text=" ⚙️ Sozlamalar ")
 
         self.init_dash()
         self.init_upload()
@@ -278,26 +247,25 @@ class MasterApp(tk.Tk):
     def init_dash(self):
         top = tk.Frame(self.tab_dash, bg="#0f172a", pady=20, padx=25)
         top.pack(fill="x")
-        tk.Label(top, text="KADASTR VA HUQUQIY HUJJATLAR MONITORINGI", font=("Segoe UI", 16, "bold"), fg="#f8fafc", bg="#0f172a").pack(anchor="w")
-        tk.Label(top, text="Hujjatlarning yillar, oylar, hududlar va toifalar kesimidagi real vaqt tahlili", font=("Segoe UI", 10), fg="#64748b", bg="#0f172a").pack(anchor="w")
+        tk.Label(top, text="HUJJATLAR MONITORINGI VA STATISTIKA", font=("Segoe UI", 16, "bold"), fg="#f8fafc", bg="#0f172a").pack(anchor="w")
 
         cards = tk.Frame(self.tab_dash, bg="#0f172a", padx=20)
         cards.pack(fill="x")
-        self.c_total = self.build_card(cards, "JAMI ARXIVLANIGAN", "0 ta", "#0284c7", 0)
-        self.c_year = self.build_card(cards, "JORIY YIL BO'YICHA", "0 ta", "#0d9488", 1)
-        self.c_types = self.build_card(cards, "HUJJAT TURLARI", f"{len(config.DOC_TYPES)} toifa", "#7c3aed", 2)
+        self.c_total = self.build_card(cards, "JAMI ARXIVLANGAN", "0 ta", "#0284c7", 0)
+        self.c_year = self.build_card(cards, "JORIY YIL", "0 ta", "#0d9488", 1)
+        self.c_types = self.build_card(cards, "TOIFALAR", f"{len(config.DOC_TYPES)} toifa", "#7c3aed", 2)
 
         mid = tk.Frame(self.tab_dash, bg="#0f172a", padx=20, pady=15)
         mid.pack(fill="both", expand=True)
 
-        box_reg = tk.LabelFrame(mid, text="Hududiy Taqsimot", bg="#1e293b", fg="#38bdf8", font=("Segoe UI", 11, "bold"), padx=10, pady=10)
+        box_reg = tk.LabelFrame(mid, text="Hududlar Taqsimoti", bg="#1e293b", fg="#38bdf8", font=("Segoe UI", 11, "bold"), padx=10, pady=10)
         box_reg.pack(side="left", fill="both", expand=True, padx=(0, 10))
         self.tree_reg = ttk.Treeview(box_reg, columns=("H", "S"), show="headings")
-        self.tree_reg.heading("H", text="Viloyat / Hudud")
+        self.tree_reg.heading("H", text="Viloyat")
         self.tree_reg.heading("S", text="Soni")
         self.tree_reg.pack(fill="both", expand=True)
 
-        box_tm = tk.LabelFrame(mid, text="Yillar va Toifalar", bg="#1e293b", fg="#38bdf8", font=("Segoe UI", 11, "bold"), padx=10, pady=10)
+        box_tm = tk.LabelFrame(mid, text="Toifalar Taqsimoti", bg="#1e293b", fg="#38bdf8", font=("Segoe UI", 11, "bold"), padx=10, pady=10)
         box_tm.pack(side="right", fill="both", expand=True)
         self.tree_types = ttk.Treeview(box_tm, columns=("T", "S"), show="headings")
         self.tree_types.heading("T", text="Hujjat Toifasi")
@@ -314,49 +282,62 @@ class MasterApp(tk.Tk):
         return lbl
 
     def refresh_dash(self):
-        st = database.get_statistics()
-        self.c_total.config(text=f"{st['total']} ta")
-        cy = str(datetime.now().year)
-        y_cnt = next((cnt for y, cnt in st["years"] if str(y) == cy), 0)
-        self.c_year.config(text=f"{y_cnt} ta ({cy})")
+        try:
+            st = database.get_statistics()
+            self.c_total.config(text=f"{st['total']} ta")
+            cy = str(datetime.now().year)
+            y_cnt = next((cnt for y, cnt in st["years"] if str(y) == cy), 0)
+            self.c_year.config(text=f"{y_cnt} ta ({cy})")
 
-        for item in self.tree_reg.get_children():
-            self.tree_reg.delete(item)
-        for r, c in st["regions"]:
-            self.tree_reg.insert("", "end", values=(r.replace("_", " "), f"{c} ta"))
+            for item in self.tree_reg.get_children():
+                self.tree_reg.delete(item)
+            for r, c in st["regions"]:
+                self.tree_reg.insert("", "end", values=(r.replace("_", " "), f"{c} ta"))
 
-        for item in self.tree_types.get_children():
-            self.tree_types.delete(item)
-        for t, c in st["types"]:
-            self.tree_types.insert("", "end", values=(t, f"{c} ta"))
+            for item in self.tree_types.get_children():
+                self.tree_types.delete(item)
+            for t, c in st["types"]:
+                self.tree_types.insert("", "end", values=(t, f"{c} ta"))
+        except Exception:
+            pass
 
-    # --- 2. Ommaviy Yuklash & Word Generatsiya ---
+    # --- 2. Hujjat Yuklash ---
     def init_upload(self):
         f = tk.Frame(self.tab_upload, bg="#0f172a", padx=40, pady=30)
         f.pack(fill="both", expand=True)
 
-        tk.Label(f, text="Ommaviy Qabul, Vaqtli Papkalash va Word Avtomatlashtirish", font=("Segoe UI", 16, "bold"), fg="#f8fafc", bg="#0f172a").pack(anchor="w")
-        tk.Label(f, text="Hujjatlar o'qiladi, sanasi/oy/yili aniqlanadi, Word formatiga o'giriladi va vaqt zanjiri bo'yicha papkalanadi.", font=("Segoe UI", 10), fg="#64748b", bg="#0f172a").pack(anchor="w", pady=(0, 20))
+        tk.Label(f, text="Hujjatlarni Saralash va Arxivlash", font=("Segoe UI", 16, "bold"), fg="#f8fafc", bg="#0f172a").pack(anchor="w")
 
         btn_box = tk.Frame(f, bg="#0f172a")
-        btn_box.pack(anchor="w", pady=10)
+        btn_box.pack(anchor="w", pady=15)
 
         tk.Button(btn_box, text="📄 PDF Fayllarni Tanlash", command=self.btn_select_files, bg="#0284c7", fg="white", font=("Segoe UI", 11, "bold"), padx=18, pady=10, relief="flat").pack(side="left", padx=(0, 15))
-        tk.Button(btn_box, text="📁 Butun Papkani Tanlash", command=self.btn_select_folder, bg="#0d9488", fg="white", font=("Segoe UI", 11, "bold"), padx=18, pady=10, relief="flat").pack(side="left")
+        tk.Button(btn_box, text="📁 Papkani Tanlash", command=self.btn_select_folder, bg="#0d9488", fg="white", font=("Segoe UI", 11, "bold"), padx=18, pady=10, relief="flat").pack(side="left")
 
         self.pbar = ttk.Progressbar(f, orient="horizontal", length=800, mode="determinate")
-        self.pbar.pack(anchor="w", pady=25)
+        self.pbar.pack(anchor="w", pady=20)
 
-        self.txt_status = tk.StringVar(value="Tizim tayyor holatda.")
+        self.txt_status = tk.StringVar(value="Tizim tayyor.")
         tk.Label(f, textvariable=self.txt_status, font=("Segoe UI", 11), fg="#38bdf8", bg="#0f172a").pack(anchor="w")
 
-        tk.Label(f, text="Amallar jurnali (Log):", font=("Segoe UI", 10, "bold"), fg="#94a3b8", bg="#0f172a").pack(anchor="w", pady=(20, 5))
+        tk.Label(f, text="Amallar jurnali:", font=("Segoe UI", 10, "bold"), fg="#94a3b8", bg="#0f172a").pack(anchor="w", pady=(15, 5))
         self.log_box = tk.Text(f, bg="#1e293b", fg="#e2e8f0", height=12, font=("Consolas", 9), relief="flat")
         self.log_box.pack(fill="x")
 
     def log_msg(self, m):
+        self.after(0, self._log_msg_ui, m)
+
+    def _log_msg_ui(self, m):
         self.log_box.insert("end", f"[{datetime.now().strftime('%H:%M:%S')}] {m}\n")
         self.log_box.see("end")
+
+    def update_status_ui(self, text, val=None):
+        self.after(0, self._update_status, text, val)
+
+    def _update_status(self, text, val):
+        self.txt_status.set(text)
+        if val is not None:
+            self.pbar["value"] = val
 
     def btn_select_files(self):
         f = filedialog.askopenfilenames(title="PDF tanlang", filetypes=[("PDF", "*.pdf")])
@@ -374,57 +355,54 @@ class MasterApp(tk.Tk):
 
     def process_batch(self, files):
         tot = len(files)
-        self.pbar["maximum"] = tot
-        self.pbar["value"] = 0
+        self.after(0, lambda: self.pbar.configure(maximum=tot, value=0))
         succ = 0
 
         for i, path in enumerate(files, 1):
             fname = os.path.basename(path)
-            self.txt_status.set(f"[{i}/{tot}] Tahlil va konvertatsiya: {fname}")
+            self.update_status_ui(f"[{i}/{tot}] Tahlil qilinmoqda: {fname}", i)
             self.log_msg(f"Fayl boshlandi: {fname}")
 
-            # 1. Hesh & Dublikat tekshiruvi
-            f_hash = calculate_md5(path)
-            dup = database.is_duplicate(f_hash)
-            if dup:
-                self.log_msg(f"OGOHLANTIRISH: {fname} avval yuklangan ({dup[1]}). O'tkazib yuborildi.")
-                self.pbar["value"] = i
-                continue
+            try:
+                f_hash = calculate_md5(path)
+                dup = database.is_duplicate(f_hash)
+                if dup:
+                    self.log_msg(f"MAVJUD: {fname} avval yuklangan ({dup[1]}). O'tkazildi.")
+                    continue
 
-            # 2. Matn olish & AI tahlil
-            full_txt, pages = extract_pdf_data(path)
-            reg, org, d_type, y, m, d, doc_num = analyze_with_ai(full_txt)
+                full_txt, pages = extract_pdf_data(path)
+                reg, org, d_type, y, m, d, doc_num = analyze_with_ai(full_txt, fname)
 
-            # 3. Yil / Oy / Hudud / Tashkilot / Tur bo'yicha papkalash
-            target_dir = os.path.join(config.BASE_DIR, str(y), f"{str(m)}-oy", reg, org, d_type)
-            os.makedirs(target_dir, exist_ok=True)
+                # Dinamik papka
+                target_dir = os.path.join(config.BASE_DIR, str(y), f"{str(m)}-oy", reg, org, d_type)
+                os.makedirs(target_dir, exist_ok=True)
 
-            # PDF ni ko'chirish
-            dest_pdf = os.path.join(target_dir, fname)
-            shutil.copy2(path, dest_pdf)
+                dest_pdf = os.path.join(target_dir, fname)
+                shutil.copy2(path, dest_pdf)
 
-            # Avtomatik Word (.docx) nusxa yaratish
-            word_name = os.path.splitext(fname)[0] + "_nusxa.docx"
-            dest_word = os.path.join(target_dir, word_name)
-            export_pdf_to_word(pages, dest_word)
+                # Word nusxa
+                word_name = os.path.splitext(fname)[0] + "_nusxa.docx"
+                dest_word = os.path.join(target_dir, word_name)
+                export_pdf_to_word(pages, dest_word)
 
-            # Bazaga yozish
-            database.save_document_record(fname, dest_pdf, y, m, d, reg, org, d_type, doc_num, f_hash, full_txt)
-            self.log_msg(f"Muvaffaqiyatli: {y}/{m}-oy/{reg}/{d_type} papkasiga joylandi va Word yaratildi.")
-            succ += 1
-            self.pbar["value"] = i
+                database.save_document_record(fname, dest_pdf, y, m, d, reg, org, d_type, doc_num, f_hash, full_txt)
+                self.log_msg(f"Joylandi: {y}/{m}-oy/{reg}/{d_type}")
+                succ += 1
 
-        self.txt_status.set(f"Jarayon yakunlandi: {succ}/{tot} ta hujjat muvaffaqiyatli arxivlandi.")
-        messagebox.showinfo("Tayyor", f"{succ} ta hujjat arxivlandi va Word nusxalari yaratildi!")
+            except Exception as err:
+                self.log_msg(f"Xato ({fname}): {err}")
 
-    # --- 3. Arxiv Explorer ---
+        self.update_status_ui(f"Tugallandi: {succ}/{tot} ta hujjat arxivlandi.", tot)
+        self.after(0, lambda: messagebox.showinfo("Bajarildi", f"{succ} ta hujjat muvaffaqiyatli arxivlandi!"))
+
+    # --- 3. Explorer ---
     def init_explorer(self):
         paned = tk.PanedWindow(self.tab_explorer, orient="horizontal", bg="#0f172a", sashwidth=4)
         paned.pack(fill="both", expand=True, padx=15, pady=15)
 
         left = tk.Frame(paned, bg="#1e293b")
         paned.add(left, minsize=350)
-        tk.Label(left, text="Vaqtli va Hududiy Papkalar Zanjiri", font=("Segoe UI", 11, "bold"), fg="#38bdf8", bg="#1e293b", pady=8).pack(anchor="w", padx=10)
+        tk.Label(left, text="Papkalar Iyerarxiyasi", font=("Segoe UI", 11, "bold"), fg="#38bdf8", bg="#1e293b", pady=8).pack(anchor="w", padx=10)
 
         self.exp_tree = ttk.Treeview(left)
         self.exp_tree.pack(fill="both", expand=True, padx=5, pady=5)
@@ -432,12 +410,12 @@ class MasterApp(tk.Tk):
 
         right = tk.Frame(paned, bg="#1e293b")
         paned.add(right, minsize=650)
-        tk.Label(right, text="Papka tarkibi (PDF ustiga 2 marta bossangiz viewer ochiladi)", font=("Segoe UI", 11, "bold"), fg="#38bdf8", bg="#1e293b", pady=8).pack(anchor="w", padx=10)
+        tk.Label(right, text="Hujjatlar (Ko'rish uchun ustiga 2 marta bosing)", font=("Segoe UI", 11, "bold"), fg="#38bdf8", bg="#1e293b", pady=8).pack(anchor="w", padx=10)
 
         self.exp_files = ttk.Treeview(right, columns=("Nom", "Format", "Hajm", "Path"), show="headings")
         self.exp_files.heading("Nom", text="Hujjat Nomi")
         self.exp_files.heading("Format", text="Format")
-        self.exp_files.heading("Hajm", text="Hajmi (KB)")
+        self.exp_files.heading("Hajm", text="Hajmi")
         self.exp_files.heading("Path", text="Path")
         self.exp_files.column("Path", width=0, stretch=False)
         self.exp_files.pack(fill="both", expand=True, padx=5, pady=5)
@@ -473,7 +451,7 @@ class MasterApp(tk.Tk):
             for f in sorted(os.listdir(p)):
                 fp = os.path.join(p, f)
                 if os.path.isfile(fp):
-                    fmt = "Word (.docx)" if f.endswith(".docx") else ("PDF" if f.endswith(".pdf") else "Boshqa")
+                    fmt = "Word" if f.endswith(".docx") else ("PDF" if f.endswith(".pdf") else "Boshqa")
                     sz = f"{os.path.getsize(fp)//1024} KB"
                     self.exp_files.insert("", "end", values=(f, fmt, sz, fp))
 
@@ -491,7 +469,7 @@ class MasterApp(tk.Tk):
     def init_search(self):
         top = tk.Frame(self.tab_search, bg="#0f172a", padx=25, pady=20)
         top.pack(fill="x")
-        tk.Label(top, text="Aqlli Indeksli Qidiruv Tizimi", font=("Segoe UI", 16, "bold"), fg="#f8fafc", bg="#0f172a").pack(anchor="w")
+        tk.Label(top, text="Qidiruv Tizimi", font=("Segoe UI", 16, "bold"), fg="#f8fafc", bg="#0f172a").pack(anchor="w")
 
         sf = tk.Frame(top, bg="#0f172a", pady=10)
         sf.pack(fill="x")
@@ -527,19 +505,15 @@ class MasterApp(tk.Tk):
         if os.path.exists(fp):
             ModernPDFViewer(self, fp)
 
-    # --- 5. Admin ---
+    # --- 5. Sozlamalar ---
     def init_admin(self):
         f = tk.Frame(self.tab_admin, bg="#0f172a", padx=40, pady=30)
         f.pack(fill="both", expand=True)
-        tk.Label(f, text="Tizim Sozlamalari va Baza Xizmati", font=("Segoe UI", 16, "bold"), fg="#f8fafc", bg="#0f172a").pack(anchor="w")
-
-        b1 = tk.LabelFrame(f, text="Arxivlash Qoidasi", bg="#1e293b", fg="#38bdf8", font=("Segoe UI", 11, "bold"), padx=15, pady=15)
-        b1.pack(fill="x", pady=15)
-        tk.Label(b1, text="Tuzilma: /Arxiv/<Yil>/<Oy>/<Hudud>/<Idora>/<Hujjat_Turi>/[PDF va DOCX]", fg="#e2e8f0", bg="#1e293b", font=("Segoe UI", 10)).pack(anchor="w")
+        tk.Label(f, text="Tizim Sozlamalari", font=("Segoe UI", 16, "bold"), fg="#f8fafc", bg="#0f172a").pack(anchor="w")
 
         b2 = tk.LabelFrame(f, text="Bazani Tozalash", bg="#1e293b", fg="#ef4444", font=("Segoe UI", 11, "bold"), padx=15, pady=15)
-        b2.pack(fill="x", pady=10)
-        tk.Button(b2, text="Barcha indekslarni tozalash (Reset DB)", command=self.reset_db, bg="#dc2626", fg="white", font=("Segoe UI", 10, "bold"), relief="flat", padx=10, pady=5).pack(side="left")
+        b2.pack(fill="x", pady=15)
+        tk.Button(b2, text="Barcha ma'lumotlarni tozalash (Reset DB)", command=self.reset_db, bg="#dc2626", fg="white", font=("Segoe UI", 10, "bold"), relief="flat", padx=10, pady=5).pack(side="left")
 
     def reset_db(self):
         if messagebox.askyesno("Tasdiq", "Rostdan ham barcha ma'lumotlar bazasini o'chirmoqchimisiz?"):
