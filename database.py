@@ -1,4 +1,3 @@
-# database.py
 import sqlite3
 from datetime import datetime
 
@@ -47,3 +46,34 @@ def search_documents(query):
     results = cursor.fetchall()
     conn.close()
     return results
+
+def get_statistics():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT COUNT(*) FROM documents")
+    total_docs = cursor.fetchone()[0]
+
+    cursor.execute("SELECT region, COUNT(*) FROM documents GROUP BY region ORDER BY COUNT(*) DESC")
+    region_stats = cursor.fetchall()
+
+    cursor.execute("SELECT organization, COUNT(*) FROM documents GROUP BY organization ORDER BY COUNT(*) DESC")
+    org_stats = cursor.fetchall()
+
+    cursor.execute("SELECT doc_type, COUNT(*) FROM documents GROUP BY doc_type ORDER BY COUNT(*) DESC")
+    type_stats = cursor.fetchall()
+
+    conn.close()
+    return {
+        "total": total_docs,
+        "regions": region_stats,
+        "orgs": org_stats,
+        "types": type_stats
+    }
+
+def clear_all_data():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM documents")
+    conn.commit()
+    conn.close()
