@@ -54,7 +54,9 @@ def search_documents(query):
     cursor = conn.cursor()
     param = f"%{query}%"
     cursor.execute("""
-        SELECT file_name, region, organization, doc_type, doc_year || '-' || doc_month || '-' || doc_day, doc_number, file_path
+        SELECT file_name, region, organization, doc_type, 
+               COALESCE(doc_year, '') || '-' || COALESCE(doc_month, '') || '-' || COALESCE(doc_day, ''), 
+               doc_number, file_path
         FROM documents
         WHERE content LIKE ? OR file_name LIKE ? OR doc_number LIKE ?
         ORDER BY id DESC
@@ -68,18 +70,19 @@ def get_statistics():
     cursor = conn.cursor()
 
     cursor.execute("SELECT COUNT(*) FROM documents")
-    total = cursor.fetchone()[0]
+    row_tot = cursor.fetchone()
+    total = row_tot[0] if row_tot else 0
 
-    cursor.execute("SELECT region, COUNT(*) FROM documents GROUP BY region ORDER BY COUNT(*) DESC")
+    cursor.execute("SELECT COALESCE(region, 'Noma''lum'), COUNT(*) FROM documents GROUP BY region ORDER BY COUNT(*) DESC")
     regions = cursor.fetchall()
 
-    cursor.execute("SELECT organization, COUNT(*) FROM documents GROUP BY organization ORDER BY COUNT(*) DESC")
+    cursor.execute("SELECT COALESCE(organization, 'Noma''lum'), COUNT(*) FROM documents GROUP BY organization ORDER BY COUNT(*) DESC")
     orgs = cursor.fetchall()
 
-    cursor.execute("SELECT doc_type, COUNT(*) FROM documents GROUP BY doc_type ORDER BY COUNT(*) DESC")
+    cursor.execute("SELECT COALESCE(doc_type, 'Boshqa'), COUNT(*) FROM documents GROUP BY doc_type ORDER BY COUNT(*) DESC")
     types = cursor.fetchall()
 
-    cursor.execute("SELECT doc_year, COUNT(*) FROM documents GROUP BY doc_year ORDER BY doc_year DESC")
+    cursor.execute("SELECT COALESCE(doc_year, '2026'), COUNT(*) FROM documents GROUP BY doc_year ORDER BY doc_year DESC")
     years = cursor.fetchall()
 
     conn.close()
