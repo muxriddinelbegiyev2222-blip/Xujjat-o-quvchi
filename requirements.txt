@@ -4,3 +4,4 @@ pyinstaller
 PyMuPDF
 Pillow
 python-docx
+pytesseract
