@@ -16,7 +16,7 @@ import database
 
 database.init_db()
 
-# --- Xavfsiz Yordamchi Funksiyalar ---
+# --- Yordamchi Funksiyalar ---
 def calculate_md5(file_path):
     try:
         hasher = hashlib.md5()
@@ -47,29 +47,31 @@ def extract_pdf_data(pdf_path):
 
     return full_text.strip(), pages_text
 
-def export_pdf_to_word(pages_text, target_docx_path):
+def export_single_pdf_to_word(pdf_path, target_docx_path):
+    """Faqat foydalanuvchi tugmani bosganda ishlaydigan ixtiyoriy Word export"""
     try:
+        _, pages_text = extract_pdf_data(pdf_path)
         doc = Document()
         for idx, page_txt in enumerate(pages_text, 1):
             doc.add_heading(f"Sahifa {idx}", level=2)
-            doc.add_paragraph(page_txt.strip() if page_txt.strip() else "[Matn aniqlanmadi]")
+            clean_txt = page_txt.strip() if page_txt.strip() else "[Ushbu sahifada matn aniqlanmadi (skaner rasm)]"
+            doc.add_paragraph(clean_txt)
             if idx < len(pages_text):
                 doc.add_page_break()
         doc.save(target_docx_path)
+        return True
     except Exception as e:
         print(f"Word yaratishda xato: {e}")
+        return False
 
 def parse_filename_fallback(file_name):
-    """AI javob bermasa yoki xato bersa, fayl nomidan toifani aniqlash"""
     now = datetime.now()
     year, month, day = str(now.year), f"{now.month:02d}", f"{now.day:02d}"
     
-    # Sanani qidirish
     date_m = re.search(r"(\d{4})[_\-\.](\d{2})[_\-\.](\d{2})", file_name)
     if date_m:
         year, month, day = date_m.groups()
 
-    # Hujjat turini qidirish
     fn_lower = file_name.lower()
     doc_type = "Boshqa"
     if "buyruq" in fn_lower:
@@ -89,7 +91,7 @@ def analyze_with_ai(text, file_name):
     prompt = f"""
 Quyidagi rasmiy hujjat matni yoki nomini tahlil qiling:
 Fayl nomi: {file_name}
-Matn: {text[:2000]}
+Matn: {text[:2500]}
 
 Javobni FAQAT quyidagi kalitlar bilan yozing:
 HUDUD: ({', '.join(config.REGIONS)} orasidan biri)
@@ -99,7 +101,6 @@ SANA: (YYYY-MM-DD formatida)
 RAQAM: (hujjat raqami)
 """
     try:
-        # 8 soniyada javob bermasa fallback ishlaydi
         client = ollama.Client(timeout=8)
         response = client.chat(
             model="llama3.2:1b",
@@ -144,15 +145,15 @@ RAQAM: (hujjat raqami)
 
         return region, org, doc_type, year, month, day, doc_num
     except Exception as e:
-        print(f"AI ishlamadi, zaxira rejim qo'llanildi: {e}")
+        print(f"AI zaxira rejimida: {e}")
         return parse_filename_fallback(file_name)
 
-# --- PDF Viewer Oynasi ---
+# --- PDF Viewer & Ixtiyoriy Word Export ---
 class ModernPDFViewer(tk.Toplevel):
     def __init__(self, parent, pdf_path):
         super().__init__(parent)
         self.title(f"Hujjat: {os.path.basename(pdf_path)}")
-        self.geometry("900x800")
+        self.geometry("950x850")
         self.configure(bg="#0f172a")
         self.pdf_path = pdf_path
         self.doc = fitz.open(pdf_path)
@@ -160,11 +161,15 @@ class ModernPDFViewer(tk.Toplevel):
 
         nav = tk.Frame(self, bg="#1e293b", pady=8)
         nav.pack(fill="x")
+        
         tk.Button(nav, text="◀ Oldingi", command=self.prev_p, bg="#334155", fg="white", relief="flat").pack(side="left", padx=10)
         self.lbl_p = tk.Label(nav, text="", bg="#1e293b", fg="#38bdf8", font=("Segoe UI", 10, "bold"))
         self.lbl_p.pack(side="left", padx=10)
         tk.Button(nav, text="Keyingi ▶", command=self.next_p, bg="#334155", fg="white", relief="flat").pack(side="left", padx=10)
-        tk.Button(nav, text="Tashqi dasturda ochish", command=lambda: os.startfile(self.pdf_path), bg="#0284c7", fg="white", relief="flat").pack(side="right", padx=10)
+
+        # Kerak bo'lganda Word qilib oladigan asosiy tugma
+        tk.Button(nav, text="📝 Word (.docx) qilib olish", command=self.export_word, bg="#0284c7", fg="white", font=("Segoe UI", 9, "bold"), relief="flat", padx=10).pack(side="right", padx=10)
+        tk.Button(nav, text="Tashqi ochish", command=lambda: os.startfile(self.pdf_path), bg="#334155", fg="white", relief="flat").pack(side="right", padx=5)
 
         self.canvas = tk.Canvas(self, bg="#334155", highlightthickness=0)
         sc = tk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
@@ -176,7 +181,7 @@ class ModernPDFViewer(tk.Toplevel):
 
     def render(self):
         page = self.doc.load_page(self.current_page)
-        pix = page.get_pixmap(matrix=fitz.Matrix(1.1, 1.1))
+        pix = page.get_pixmap(matrix=fitz.Matrix(1.15, 1.15))
         img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
         self.photo = ImageTk.PhotoImage(img)
         self.canvas.delete("all")
@@ -194,7 +199,20 @@ class ModernPDFViewer(tk.Toplevel):
             self.current_page -= 1
             self.render()
 
-# --- Asosiy Dastur ---
+    def export_word(self):
+        default_name = os.path.splitext(os.path.basename(self.pdf_path))[0] + ".docx"
+        dest = filedialog.asksaveasfilename(
+            initialfile=default_name,
+            defaultextension=".docx",
+            filetypes=[("Word Hujjati", "*.docx")]
+        )
+        if dest:
+            if export_single_pdf_to_word(self.pdf_path, dest):
+                messagebox.showinfo("Muvaffaqiyatli", f"Hujjat Word (.docx) formatiga o'tkazildi:\n{dest}")
+            else:
+                messagebox.showerror("Xato", "Word formatiga o'tkazishda xatolik yuz berdi!")
+
+# --- Asosiy Ilova ---
 class MasterApp(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -301,18 +319,19 @@ class MasterApp(tk.Tk):
         except Exception:
             pass
 
-    # --- 2. Hujjat Yuklash ---
+    # --- 2. Hujjat Yuklash & PDF Saralash ---
     def init_upload(self):
         f = tk.Frame(self.tab_upload, bg="#0f172a", padx=40, pady=30)
         f.pack(fill="both", expand=True)
 
-        tk.Label(f, text="Hujjatlarni Saralash va Arxivlash", font=("Segoe UI", 16, "bold"), fg="#f8fafc", bg="#0f172a").pack(anchor="w")
+        tk.Label(f, text="PDF Hujjatlarni Dinamik Vaqtli Arxivlash", font=("Segoe UI", 16, "bold"), fg="#f8fafc", bg="#0f172a").pack(anchor="w")
+        tk.Label(f, text="PDF fayllarning o'zi ichki sanasi/yil/oyiga ko'ra tegishli papkalarga saralanadi.", font=("Segoe UI", 10), fg="#64748b", bg="#0f172a").pack(anchor="w", pady=(0, 15))
 
         btn_box = tk.Frame(f, bg="#0f172a")
-        btn_box.pack(anchor="w", pady=15)
+        btn_box.pack(anchor="w", pady=10)
 
-        tk.Button(btn_box, text="📄 PDF Fayllarni Tanlash", command=self.btn_select_files, bg="#0284c7", fg="white", font=("Segoe UI", 11, "bold"), padx=18, pady=10, relief="flat").pack(side="left", padx=(0, 15))
-        tk.Button(btn_box, text="📁 Papkani Tanlash", command=self.btn_select_folder, bg="#0d9488", fg="white", font=("Segoe UI", 11, "bold"), padx=18, pady=10, relief="flat").pack(side="left")
+        tk.Button(btn_box, text="📄 Bir nechta PDF Tanlash", command=self.btn_select_files, bg="#0284c7", fg="white", font=("Segoe UI", 11, "bold"), padx=18, pady=10, relief="flat").pack(side="left", padx=(0, 15))
+        tk.Button(btn_box, text="📁 Butun Papkani Tanlash", command=self.btn_select_folder, bg="#0d9488", fg="white", font=("Segoe UI", 11, "bold"), padx=18, pady=10, relief="flat").pack(side="left")
 
         self.pbar = ttk.Progressbar(f, orient="horizontal", length=800, mode="determinate")
         self.pbar.pack(anchor="w", pady=20)
@@ -351,7 +370,7 @@ class MasterApp(tk.Tk):
             if flist:
                 threading.Thread(target=self.process_batch, args=(flist,), daemon=True).start()
             else:
-                messagebox.showwarning("Bo'sh", "Ushbu papkada PDF fayl yo'q!")
+                messagebox.showwarning("Bo'sh", "Ushbu papkada PDF fayllar topilmadi!")
 
     def process_batch(self, files):
         tot = len(files)
@@ -367,23 +386,18 @@ class MasterApp(tk.Tk):
                 f_hash = calculate_md5(path)
                 dup = database.is_duplicate(f_hash)
                 if dup:
-                    self.log_msg(f"MAVJUD: {fname} avval yuklangan ({dup[1]}). O'tkazildi.")
+                    self.log_msg(f"MAVJUD: {fname} allaqachon arxivda bor ({dup[1]}). O'tkazildi.")
                     continue
 
-                full_txt, pages = extract_pdf_data(path)
+                full_txt, _ = extract_pdf_data(path)
                 reg, org, d_type, y, m, d, doc_num = analyze_with_ai(full_txt, fname)
 
-                # Dinamik papka
+                # Faqat PDF-ni Yil/Oy/Hudud/Idora/Toifa bo'yicha saralash
                 target_dir = os.path.join(config.BASE_DIR, str(y), f"{str(m)}-oy", reg, org, d_type)
                 os.makedirs(target_dir, exist_ok=True)
 
                 dest_pdf = os.path.join(target_dir, fname)
                 shutil.copy2(path, dest_pdf)
-
-                # Word nusxa
-                word_name = os.path.splitext(fname)[0] + "_nusxa.docx"
-                dest_word = os.path.join(target_dir, word_name)
-                export_pdf_to_word(pages, dest_word)
 
                 database.save_document_record(fname, dest_pdf, y, m, d, reg, org, d_type, doc_num, f_hash, full_txt)
                 self.log_msg(f"Joylandi: {y}/{m}-oy/{reg}/{d_type}")
@@ -392,8 +406,8 @@ class MasterApp(tk.Tk):
             except Exception as err:
                 self.log_msg(f"Xato ({fname}): {err}")
 
-        self.update_status_ui(f"Tugallandi: {succ}/{tot} ta hujjat arxivlandi.", tot)
-        self.after(0, lambda: messagebox.showinfo("Bajarildi", f"{succ} ta hujjat muvaffaqiyatli arxivlandi!"))
+        self.update_status_ui(f"Tugallandi: {succ}/{tot} ta PDF arxivlandi.", tot)
+        self.after(0, lambda: messagebox.showinfo("Bajarildi", f"{succ} ta PDF hujjat muvaffaqiyatli arxivlandi!"))
 
     # --- 3. Explorer ---
     def init_explorer(self):
@@ -402,7 +416,7 @@ class MasterApp(tk.Tk):
 
         left = tk.Frame(paned, bg="#1e293b")
         paned.add(left, minsize=350)
-        tk.Label(left, text="Papkalar Iyerarxiyasi", font=("Segoe UI", 11, "bold"), fg="#38bdf8", bg="#1e293b", pady=8).pack(anchor="w", padx=10)
+        tk.Label(left, text="Vaqtli va Hududiy Papkalar", font=("Segoe UI", 11, "bold"), fg="#38bdf8", bg="#1e293b", pady=8).pack(anchor="w", padx=10)
 
         self.exp_tree = ttk.Treeview(left)
         self.exp_tree.pack(fill="both", expand=True, padx=5, pady=5)
@@ -410,11 +424,10 @@ class MasterApp(tk.Tk):
 
         right = tk.Frame(paned, bg="#1e293b")
         paned.add(right, minsize=650)
-        tk.Label(right, text="Hujjatlar (Ko'rish uchun ustiga 2 marta bosing)", font=("Segoe UI", 11, "bold"), fg="#38bdf8", bg="#1e293b", pady=8).pack(anchor="w", padx=10)
+        tk.Label(right, text="PDF Hujjatlar (Ko'rish uchun ustiga 2 marta bosing)", font=("Segoe UI", 11, "bold"), fg="#38bdf8", bg="#1e293b", pady=8).pack(anchor="w", padx=10)
 
-        self.exp_files = ttk.Treeview(right, columns=("Nom", "Format", "Hajm", "Path"), show="headings")
+        self.exp_files = ttk.Treeview(right, columns=("Nom", "Hajm", "Path"), show="headings")
         self.exp_files.heading("Nom", text="Hujjat Nomi")
-        self.exp_files.heading("Format", text="Format")
         self.exp_files.heading("Hajm", text="Hajmi")
         self.exp_files.heading("Path", text="Path")
         self.exp_files.column("Path", width=0, stretch=False)
@@ -450,20 +463,17 @@ class MasterApp(tk.Tk):
         if os.path.exists(p) and os.path.isdir(p):
             for f in sorted(os.listdir(p)):
                 fp = os.path.join(p, f)
-                if os.path.isfile(fp):
-                    fmt = "Word" if f.endswith(".docx") else ("PDF" if f.endswith(".pdf") else "Boshqa")
+                if os.path.isfile(fp) and f.lower().endswith(".pdf"):
                     sz = f"{os.path.getsize(fp)//1024} KB"
-                    self.exp_files.insert("", "end", values=(f, fmt, sz, fp))
+                    self.exp_files.insert("", "end", values=(f, sz, fp))
 
     def open_exp_file(self, e):
         sel = self.exp_files.selection()
         if not sel:
             return
-        fp = self.exp_files.item(sel[0])["values"][3]
+        fp = self.exp_files.item(sel[0])["values"][2]
         if fp.lower().endswith(".pdf"):
             ModernPDFViewer(self, fp)
-        elif fp.lower().endswith(".docx"):
-            os.startfile(fp)
 
     # --- 4. Qidiruv ---
     def init_search(self):
