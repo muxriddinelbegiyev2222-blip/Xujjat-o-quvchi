@@ -11,9 +11,14 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             file_name TEXT,
             file_path TEXT,
+            doc_year TEXT,
+            doc_month TEXT,
+            doc_day TEXT,
             region TEXT,
             organization TEXT,
             doc_type TEXT,
+            doc_number TEXT,
+            file_hash TEXT UNIQUE,
             saved_date TEXT,
             content TEXT
         )
@@ -21,14 +26,23 @@ def init_db():
     conn.commit()
     conn.close()
 
-def save_document_record(file_name, file_path, region, org, doc_type, content):
+def is_duplicate(file_hash):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, file_name, file_path FROM documents WHERE file_hash = ?", (file_hash,))
+    row = cursor.fetchone()
+    conn.close()
+    return row
+
+def save_document_record(file_name, file_path, year, month, day, region, org, doc_type, doc_num, file_hash, content):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     saved_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     cursor.execute("""
-        INSERT INTO documents (file_name, file_path, region, org, doc_type, saved_date, content)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (file_name, file_path, region, org, doc_type, saved_date, content))
+        INSERT OR REPLACE INTO documents 
+        (file_name, file_path, doc_year, doc_month, doc_day, region, org, doc_type, doc_number, file_hash, saved_date, content)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (file_name, file_path, year, month, day, region, org, doc_type, doc_num, file_hash, saved_date, content))
     conn.commit()
     conn.close()
     return saved_date
@@ -36,39 +50,43 @@ def save_document_record(file_name, file_path, region, org, doc_type, content):
 def search_documents(query):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    search_term = f"%{query}%"
+    param = f"%{query}%"
     cursor.execute("""
-        SELECT file_name, file_path, region, org, doc_type, saved_date 
-        FROM documents 
-        WHERE content LIKE ? OR file_name LIKE ?
+        SELECT file_name, region, organization, doc_type, doc_year || '-' || doc_month || '-' || doc_day, doc_number, file_path
+        FROM documents
+        WHERE content LIKE ? OR file_name LIKE ? OR doc_number LIKE ?
         ORDER BY id DESC
-    """, (search_term, search_term))
-    results = cursor.fetchall()
+    """, (param, param, param))
+    rows = cursor.fetchall()
     conn.close()
-    return results
+    return rows
 
 def get_statistics():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    
+
     cursor.execute("SELECT COUNT(*) FROM documents")
-    total_docs = cursor.fetchone()[0]
+    total = cursor.fetchone()[0]
 
     cursor.execute("SELECT region, COUNT(*) FROM documents GROUP BY region ORDER BY COUNT(*) DESC")
-    region_stats = cursor.fetchall()
+    regions = cursor.fetchall()
 
     cursor.execute("SELECT organization, COUNT(*) FROM documents GROUP BY organization ORDER BY COUNT(*) DESC")
-    org_stats = cursor.fetchall()
+    orgs = cursor.fetchall()
 
     cursor.execute("SELECT doc_type, COUNT(*) FROM documents GROUP BY doc_type ORDER BY COUNT(*) DESC")
-    type_stats = cursor.fetchall()
+    types = cursor.fetchall()
+
+    cursor.execute("SELECT doc_year, COUNT(*) FROM documents GROUP BY doc_year ORDER BY doc_year DESC")
+    years = cursor.fetchall()
 
     conn.close()
     return {
-        "total": total_docs,
-        "regions": region_stats,
-        "orgs": org_stats,
-        "types": type_stats
+        "total": total,
+        "regions": regions,
+        "orgs": orgs,
+        "types": types,
+        "years": years
     }
 
 def clear_all_data():
