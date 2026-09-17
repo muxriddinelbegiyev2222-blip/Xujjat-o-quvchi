@@ -27,33 +27,30 @@ def calculate_md5(file_path):
     except Exception:
         return ""
 
-def extract_pdf_data(pdf_path):
+def extract_pdf_content(pdf_path):
+    """Faqat PDF ichidagi haqiqiy matnni ajratib olish (fayl nomiga bog'lanmagan)"""
     full_text = ""
     pages_text = []
     try:
         doc = fitz.open(pdf_path)
-        for page in doc:
+        for page_num in range(len(doc)):
+            page = doc[page_num]
             txt = page.get_text("text") or ""
             pages_text.append(txt)
-            full_text += txt + "\n"
+            full_text += f"\n--- SAHIFA {page_num + 1} ---\n" + txt
         doc.close()
     except Exception as e:
-        print(f"PDF o'qishda xatolik: {e}")
-
-    if not full_text.strip():
-        file_name = os.path.basename(pdf_path)
-        full_text = f"Hujjat fayl nomi: {file_name}"
-        pages_text = [f"Fayl nomi: {file_name}\n(Skanerlangan hujjat)"]
+        print(f"PDF o'qishda xato: {e}")
 
     return full_text.strip(), pages_text
 
 def export_single_pdf_to_word(pdf_path, target_docx_path):
     try:
-        _, pages_text = extract_pdf_data(pdf_path)
+        _, pages_text = extract_pdf_content(pdf_path)
         doc = Document()
         for idx, page_txt in enumerate(pages_text, 1):
             doc.add_heading(f"Sahifa {idx}", level=2)
-            clean_txt = page_txt.strip() if page_txt.strip() else "[Ushbu sahifada matn aniqlanmadi (skaner rasm)]"
+            clean_txt = page_txt.strip() if page_txt.strip() else "[Ushbu sahifada kompyuter matni yo'q (skaner rasm)]"
             doc.add_paragraph(clean_txt)
             if idx < len(pages_text):
                 doc.add_page_break()
@@ -63,91 +60,146 @@ def export_single_pdf_to_word(pdf_path, target_docx_path):
         print(f"Word yaratishda xato: {e}")
         return False
 
-def parse_filename_fallback(file_name):
+def extract_dates_from_text(text):
+    """Matn ichidan rasmiy sanalarni qidirish (regex)"""
+    # 1. 2026-09-17 yoki 2026.09.17 yoki 2026/09/17
+    m1 = re.search(r"\b(202[0-9])[\.\-\/](0[1-9]|1[0-2])[\.\-\/](0[1-9]|[12][0-9]|3[01])\b", text)
+    if m1:
+        return m1.group(1), m1.group(2), m1.group(3)
+
+    # 2. 17.09.2026 yoki 17-09-2026
+    m2 = re.search(r"\b(0[1-9]|[12][0-9]|3[01])[\.\-\/](0[1-9]|1[0-2])[\.\-\/](202[0-9])\b", text)
+    if m2:
+        return m2.group(3), m2.group(2), m2.group(1)
+
+    # 3. "17" sentyabr 2026 yil
+    months_uz = {
+        "yanvar": "01", "fevral": "02", "mart": "03", "aprel": "04", "may": "05", "iyun": "06",
+        "iyul": "07", "avgust": "08", "sentyabr": "09", "oktyabr": "10", "noyabr": "11", "dekabr": "12"
+    }
+    for m_name, m_num in months_uz.items():
+        m3 = re.search(rf"(\d{{1,2}})\s*[-–—\s]*{m_name}\s*[-–—\s]*(202[0-9])", text, re.IGNORECASE)
+        if m3:
+            day_str = f"{int(m3.group(1)):02d}"
+            year_str = m3.group(2)
+            return year_str, m_num, day_str
+
     now = datetime.now()
-    year, month, day = str(now.year), f"{now.month:02d}", f"{now.day:02d}"
-    
-    date_m = re.search(r"(\d{4})[_\-\.](\d{2})[_\-\.](\d{2})", file_name)
-    if date_m:
-        year, month, day = date_m.groups()
+    return str(now.year), f"{now.month:02d}", f"{now.day:02d}"
 
-    fn_lower = file_name.lower()
-    doc_type = "Boshqa"
-    if "buyruq" in fn_lower:
-        doc_type = "Buyruqlar"
-    elif "topshiriq" in fn_lower:
-        doc_type = "Topshiriqlar"
-    elif "xat" in fn_lower:
-        doc_type = "Xatlar"
-    elif "ariza" in fn_lower:
-        doc_type = "Arizalar"
-    elif "taqdimnoma" in fn_lower:
-        doc_type = "Taqdimnomalar"
+def analyze_document_by_content(text):
+    """PDF ICHIDAGI MATNNI O'QIB TAHLIL QILISH (Fayl nomi hisobga olinmaydi)"""
+    if not text or len(text.strip()) < 15:
+        now = datetime.now()
+        return "Toshkent_shahri", "Kadastr_Agentligi", "Boshqa", str(now.year), f"{now.month:02d}", f"{now.day:02d}", "Noma'lum"
 
-    return "Toshkent_shahri", "Kadastr_Agentligi", doc_type, year, month, day, "Noma'lum"
-
-def analyze_with_ai(text, file_name):
     prompt = f"""
-Quyidagi rasmiy hujjat matni yoki nomini tahlil qiling:
-Fayl nomi: {file_name}
-Matn: {text[:2500]}
+Siz rasmiy idoraviy hujjatlar bo'yicha ekspert-arxivchisisiz.
+Quyidagi hujjat matnini boshidan oxirigacha sinchiklab o'rganing. Hujjatning sarlavhasi, maqsadi, matnidagi mazmun-mohiyatiga qarab to'g'ri toifalarga ajrating.
 
-Javobni FAQAT quyidagi kalitlar bilan yozing:
-HUDUD: ({', '.join(config.REGIONS)} orasidan biri)
-TASHKILOT: (Kadastr_Agentligi, Davlat_Kadastrlari_Palatasi, Bosh_Prokuratura, IIV, DXX, Sudlar, Boshqa_Organlar)
-TUR: (Buyruqlar, Topshiriqlar, Xatlar, Taqdimnomalar, Arizalar, Boshqa)
-SANA: (YYYY-MM-DD formatida)
-RAQAM: (hujjat raqami)
+Qoidalar:
+1. HUDUD: Hujjat qaysi viloyat yoki hududga tegishli yoki qayerga yuborilgan?
+Variantlar: {', '.join(config.REGIONS)}. Agar butun respublika yoki agentlik markazi bo'lsa: Toshkent_shahri.
+2. TASHKILOT: Qaysi idoradan chiqqan yoki qaysi organga tegishli?
+Variantlar: Kadastr_Agentligi, Davlat_Kadastrlari_Palatasi, Bosh_Prokuratura, IIV, DXX, Sudlar, Boshqa_Organlar.
+3. TUR: Hujjatning rasmiy toifasi/nomi nima?
+Sarlavha va matniga qarang:
+- Agar buyruq bo'lsa -> Buyruqlar
+- Agar taqdimnoma bo'lsa -> Taqdimnomalar
+- Agar bildirishnoma yoki xabarnoma bo'lsa -> Bildirishnomalar
+- Agar ma'lumotnoma (spravka) bo'lsa -> Malumotnomalar
+- Agar topshiriq yoki chora-tadbirlar rejasi bo'lsa -> Topshiriqlar
+- Agar rasmiy xat yoki jo'natma bo'lsa -> Xatlar
+- Agar ariza yoki murojaat bo'lsa -> Arizalar
+- Agar qaror bo'lsa -> Qarorlar
+- Agar bayonnoma bo'lsa -> Bayonnomalar
+- Variantlar: {', '.join(config.DOC_TYPES)}
+4. SANA: Hujjat matnida ko'rsatilgan sanani toping (Format: YYYY-MM-DD).
+5. RAQAM: Hujjatning qayd raqami (masalan: 12-son, 02-14/56).
+
+Javobni FAQAT quyidagi formatda bering:
+HUDUD: <hudud>
+TASHKILOT: <tashkilot>
+TUR: <tur>
+SANA: <YYYY-MM-DD>
+RAQAM: <raqam>
+
+HUJJAT MATNI:
+{text[:3500]}
 """
     try:
-        client = ollama.Client(timeout=8)
+        client = ollama.Client(timeout=12)
         response = client.chat(
             model="llama3.2:1b",
             messages=[{"role": "user", "content": prompt}]
         )
-        lines = response["message"]["content"].strip().split("\n")
-        
+        ans = response["message"]["content"].strip().split("\n")
+
         region = "Toshkent_shahri"
         org = "Kadastr_Agentligi"
-        doc_type = "Boshqa"
-        now = datetime.now()
-        year, month, day = str(now.year), f"{now.month:02d}", f"{now.day:02d}"
+        doc_type = "Xatlar"
         doc_num = "Noma'lum"
+        parsed_date = None
 
-        for line in lines:
-            line_str = line.strip()
-            if line_str.startswith("HUDUD:"):
-                val = line_str.replace("HUDUD:", "").strip()
+        for line in ans:
+            l = line.strip()
+            if l.startswith("HUDUD:"):
+                val = l.replace("HUDUD:", "").strip()
                 for r in config.REGIONS:
                     if r.lower() in val.lower():
                         region = r
                         break
-            elif line_str.startswith("TASHKILOT:"):
-                val = line_str.replace("TASHKILOT:", "").strip()
+            elif l.startswith("TASHKILOT:"):
+                val = l.replace("TASHKILOT:", "").strip()
                 for o in config.ORGANIZATIONS + config.LAW_ENFORCEMENT:
                     if o.lower() in val.lower():
                         org = o
                         break
-            elif line_str.startswith("TUR:"):
-                val = line_str.replace("TUR:", "").strip()
+            elif l.startswith("TUR:"):
+                val = l.replace("TUR:", "").strip()
                 for t in config.DOC_TYPES:
                     if t.lower() in val.lower():
                         doc_type = t
                         break
-            elif line_str.startswith("SANA:"):
-                val = line_str.replace("SANA:", "").strip()
+            elif l.startswith("SANA:"):
+                val = l.replace("SANA:", "").strip()
                 sm = re.search(r"(\d{4})-(\d{2})-(\d{2})", val)
                 if sm:
-                    year, month, day = sm.groups()
-            elif line_str.startswith("RAQAM:"):
-                doc_num = line_str.replace("RAQAM:", "").strip() or "Noma'lum"
+                    parsed_date = sm.groups()
+            elif l.startswith("RAQAM:"):
+                doc_num = l.replace("RAQAM:", "").strip() or "Noma'lum"
+
+        if parsed_date:
+            year, month, day = parsed_date
+        else:
+            year, month, day = extract_dates_from_text(text)
 
         return region, org, doc_type, year, month, day, doc_num
-    except Exception as e:
-        print(f"AI zaxira rejimida: {e}")
-        return parse_filename_fallback(file_name)
 
-# --- PDF Viewer & Ixtiyoriy Word Export ---
+    except Exception as e:
+        print(f"AI tahlilida xato: {e}")
+        # Matn ichidan qo'lda qidirish zaxirasi
+        t_low = text.lower()
+        doc_type = "Xatlar"
+        if "buyruq" in t_low:
+            doc_type = "Buyruqlar"
+        elif "taqdimnoma" in t_low:
+            doc_type = "Taqdimnomalar"
+        elif "bildirishnoma" in t_low or "bildirgi" in t_low:
+            doc_type = "Bildirishnomalar"
+        elif "ma'lumotnoma" in t_low or "malumotnoma" in t_low or "spravka" in t_low:
+            doc_type = "Malumotnomalar"
+        elif "topshiriq" in t_low:
+            doc_type = "Topshiriqlar"
+        elif "ariza" in t_low:
+            doc_type = "Arizalar"
+        elif "qaror" in t_low:
+            doc_type = "Qarorlar"
+
+        year, month, day = extract_dates_from_text(text)
+        return "Toshkent_shahri", "Kadastr_Agentligi", doc_type, year, month, day, "Noma'lum"
+
+# --- PDF Viewer Oynasi ---
 class ModernPDFViewer(tk.Toplevel):
     def __init__(self, parent, pdf_path):
         super().__init__(parent)
@@ -210,7 +262,7 @@ class ModernPDFViewer(tk.Toplevel):
             else:
                 messagebox.showerror("Xato", "Word formatiga o'tkazishda xatolik yuz berdi!")
 
-# --- Asosiy Ilova ---
+# --- Asosiy Dastur ---
 class MasterApp(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -241,9 +293,7 @@ class MasterApp(tk.Tk):
         self.init_search()
         self.init_admin()
 
-        # Dastur ochilishi bilanoq Dashboardni to'ldirish
         self.refresh_dash()
-
         self.notebook.bind("<<NotebookTabChanged>>", self.tab_switch)
 
     def setup_styles(self):
@@ -270,8 +320,6 @@ class MasterApp(tk.Tk):
         header_box = tk.Frame(top, bg="#0f172a")
         header_box.pack(fill="x")
         tk.Label(header_box, text="HUJJATLAR MONITORINGI VA STATISTIKA", font=("Segoe UI", 16, "bold"), fg="#f8fafc", bg="#0f172a").pack(side="left")
-        
-        # Yangilash tugmasi qo'shildi
         tk.Button(header_box, text="🔄 Yangilash", command=self.refresh_dash, bg="#0284c7", fg="white", font=("Segoe UI", 9, "bold"), relief="flat", padx=12, pady=4).pack(side="right")
 
         cards = tk.Frame(self.tab_dash, bg="#0f172a", padx=20)
@@ -309,8 +357,7 @@ class MasterApp(tk.Tk):
     def refresh_dash(self):
         try:
             st = database.get_statistics()
-            total_num = st["total"]
-            self.c_total.config(text=f"{total_num} ta")
+            self.c_total.config(text=f"{st['total']} ta")
 
             cy = str(datetime.now().year)
             y_cnt = 0
@@ -319,29 +366,25 @@ class MasterApp(tk.Tk):
                     y_cnt += cnt
             self.c_year.config(text=f"{y_cnt} ta ({cy})")
 
-            # Hududlar jadvali
             for item in self.tree_reg.get_children():
                 self.tree_reg.delete(item)
             for r, c in st.get("regions", []):
-                r_name = str(r).replace("_", " ")
-                self.tree_reg.insert("", "end", values=(r_name, f"{c} ta"))
+                self.tree_reg.insert("", "end", values=(str(r).replace("_", " "), f"{c} ta"))
 
-            # Toifalar jadvali
             for item in self.tree_types.get_children():
                 self.tree_types.delete(item)
             for t, c in st.get("types", []):
                 self.tree_types.insert("", "end", values=(str(t), f"{c} ta"))
-
         except Exception as e:
-            print(f"Dashboard yangilashda xato: {e}")
+            print(f"Dashboard xato: {e}")
 
-    # --- 2. Hujjat Yuklash & PDF Saralash ---
+    # --- 2. Hujjat Yuklash & Mazmun Bo'yicha Saralash ---
     def init_upload(self):
         f = tk.Frame(self.tab_upload, bg="#0f172a", padx=40, pady=30)
         f.pack(fill="both", expand=True)
 
-        tk.Label(f, text="PDF Hujjatlarni Dinamik Vaqtli Arxivlash", font=("Segoe UI", 16, "bold"), fg="#f8fafc", bg="#0f172a").pack(anchor="w")
-        tk.Label(f, text="PDF fayllarning o'zi ichki sanasi/yil/oyiga ko'ra tegishli papkalarga saralanadi.", font=("Segoe UI", 10), fg="#64748b", bg="#0f172a").pack(anchor="w", pady=(0, 15))
+        tk.Label(f, text="PDF Hujjatlarni Mazmuni va Matni Bo'yicha Saralash", font=("Segoe UI", 16, "bold"), fg="#f8fafc", bg="#0f172a").pack(anchor="w")
+        tk.Label(f, text="Dastur fayl nomiga qaramaydi: PDF ichidagi sarlavha, matn, sana va organni tahlil qilib saralaydi.", font=("Segoe UI", 10), fg="#64748b", bg="#0f172a").pack(anchor="w", pady=(0, 15))
 
         btn_box = tk.Frame(f, bg="#0f172a")
         btn_box.pack(anchor="w", pady=10)
@@ -355,7 +398,7 @@ class MasterApp(tk.Tk):
         self.txt_status = tk.StringVar(value="Tizim tayyor.")
         tk.Label(f, textvariable=self.txt_status, font=("Segoe UI", 11), fg="#38bdf8", bg="#0f172a").pack(anchor="w")
 
-        tk.Label(f, text="Amallar jurnali:", font=("Segoe UI", 10, "bold"), fg="#94a3b8", bg="#0f172a").pack(anchor="w", pady=(15, 5))
+        tk.Label(f, text="Amallar jurnali (Tahlil natijalari):", font=("Segoe UI", 10, "bold"), fg="#94a3b8", bg="#0f172a").pack(anchor="w", pady=(15, 5))
         self.log_box = tk.Text(f, bg="#1e293b", fg="#e2e8f0", height=12, font=("Consolas", 9), relief="flat")
         self.log_box.pack(fill="x")
 
@@ -395,20 +438,26 @@ class MasterApp(tk.Tk):
 
         for i, path in enumerate(files, 1):
             fname = os.path.basename(path)
-            self.update_status_ui(f"[{i}/{tot}] Tahlil qilinmoqda: {fname}", i)
-            self.log_msg(f"Fayl boshlandi: {fname}")
+            self.update_status_ui(f"[{i}/{tot}] PDF ichi o'qilmoqda: {fname}", i)
+            self.log_msg(f"O'qilmoqda: {fname}")
 
             try:
                 f_hash = calculate_md5(path)
                 dup = database.is_duplicate(f_hash)
                 if dup:
-                    self.log_msg(f"MAVJUD: {fname} allaqachon arxivda bor ({dup[1]}). O'tkazildi.")
+                    self.log_msg(f"MAVJUD: {fname} allaqachon arxivda bor. O'tkazildi.")
                     continue
 
-                full_txt, _ = extract_pdf_data(path)
-                reg, org, d_type, y, m, d, doc_num = analyze_with_ai(full_txt, fname)
+                # 1. Faqat PDF ichidagi matnni olish
+                full_txt, _ = extract_pdf_content(path)
+                
+                if not full_txt or len(full_txt.strip()) < 10:
+                    self.log_msg(f"DIQQAT: {fname} skaner qilingan rasm bo'lib chiqdi (matn yo'q).")
 
-                # Papkalash: /Arxiv/Yil/Oy/Viloyat/Organ/Toifa/
+                # 2. Mazmun bo'yicha tahlil
+                reg, org, d_type, y, m, d, doc_num = analyze_document_by_content(full_txt)
+
+                # 3. Yil / Oy / Hudud / Idora / Toifa papkasiga faqat PDF ni nusxalash
                 target_dir = os.path.join(config.BASE_DIR, str(y), f"{str(m)}-oy", reg, org, d_type)
                 os.makedirs(target_dir, exist_ok=True)
 
@@ -416,17 +465,15 @@ class MasterApp(tk.Tk):
                 shutil.copy2(path, dest_pdf)
 
                 database.save_document_record(fname, dest_pdf, y, m, d, reg, org, d_type, doc_num, f_hash, full_txt)
-                self.log_msg(f"Joylandi: {y}/{m}-oy/{reg}/{d_type}")
+                self.log_msg(f"Aniqlangan toifa: [{d_type}] | Sana: {y}-{m}-{d} | Hudud: {reg}")
                 succ += 1
 
             except Exception as err:
                 self.log_msg(f"Xato ({fname}): {err}")
 
-        self.update_status_ui(f"Tugallandi: {succ}/{tot} ta PDF arxivlandi.", tot)
-        
-        # Dashboardni bir zumda avtomatik yangilash
+        self.update_status_ui(f"Tugallandi: {succ}/{tot} ta PDF saralandi.", tot)
         self.after(0, self.refresh_dash)
-        self.after(0, lambda: messagebox.showinfo("Bajarildi", f"{succ} ta PDF hujjat muvaffaqiyatli arxivlandi!"))
+        self.after(0, lambda: messagebox.showinfo("Bajarildi", f"{succ} ta PDF hujjat mazmuni bo'yicha saralandi!"))
 
     # --- 3. Explorer ---
     def init_explorer(self):
