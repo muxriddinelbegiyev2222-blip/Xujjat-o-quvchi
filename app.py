@@ -48,7 +48,6 @@ def extract_pdf_data(pdf_path):
     return full_text.strip(), pages_text
 
 def export_single_pdf_to_word(pdf_path, target_docx_path):
-    """Faqat foydalanuvchi tugmani bosganda ishlaydigan ixtiyoriy Word export"""
     try:
         _, pages_text = extract_pdf_data(pdf_path)
         doc = Document()
@@ -167,7 +166,6 @@ class ModernPDFViewer(tk.Toplevel):
         self.lbl_p.pack(side="left", padx=10)
         tk.Button(nav, text="Keyingi ▶", command=self.next_p, bg="#334155", fg="white", relief="flat").pack(side="left", padx=10)
 
-        # Kerak bo'lganda Word qilib oladigan asosiy tugma
         tk.Button(nav, text="📝 Word (.docx) qilib olish", command=self.export_word, bg="#0284c7", fg="white", font=("Segoe UI", 9, "bold"), relief="flat", padx=10).pack(side="right", padx=10)
         tk.Button(nav, text="Tashqi ochish", command=lambda: os.startfile(self.pdf_path), bg="#334155", fg="white", relief="flat").pack(side="right", padx=5)
 
@@ -243,6 +241,9 @@ class MasterApp(tk.Tk):
         self.init_search()
         self.init_admin()
 
+        # Dastur ochilishi bilanoq Dashboardni to'ldirish
+        self.refresh_dash()
+
         self.notebook.bind("<<NotebookTabChanged>>", self.tab_switch)
 
     def setup_styles(self):
@@ -265,7 +266,13 @@ class MasterApp(tk.Tk):
     def init_dash(self):
         top = tk.Frame(self.tab_dash, bg="#0f172a", pady=20, padx=25)
         top.pack(fill="x")
-        tk.Label(top, text="HUJJATLAR MONITORINGI VA STATISTIKA", font=("Segoe UI", 16, "bold"), fg="#f8fafc", bg="#0f172a").pack(anchor="w")
+        
+        header_box = tk.Frame(top, bg="#0f172a")
+        header_box.pack(fill="x")
+        tk.Label(header_box, text="HUJJATLAR MONITORINGI VA STATISTIKA", font=("Segoe UI", 16, "bold"), fg="#f8fafc", bg="#0f172a").pack(side="left")
+        
+        # Yangilash tugmasi qo'shildi
+        tk.Button(header_box, text="🔄 Yangilash", command=self.refresh_dash, bg="#0284c7", fg="white", font=("Segoe UI", 9, "bold"), relief="flat", padx=12, pady=4).pack(side="right")
 
         cards = tk.Frame(self.tab_dash, bg="#0f172a", padx=20)
         cards.pack(fill="x")
@@ -279,7 +286,7 @@ class MasterApp(tk.Tk):
         box_reg = tk.LabelFrame(mid, text="Hududlar Taqsimoti", bg="#1e293b", fg="#38bdf8", font=("Segoe UI", 11, "bold"), padx=10, pady=10)
         box_reg.pack(side="left", fill="both", expand=True, padx=(0, 10))
         self.tree_reg = ttk.Treeview(box_reg, columns=("H", "S"), show="headings")
-        self.tree_reg.heading("H", text="Viloyat")
+        self.tree_reg.heading("H", text="Viloyat / Hudud")
         self.tree_reg.heading("S", text="Soni")
         self.tree_reg.pack(fill="both", expand=True)
 
@@ -302,22 +309,31 @@ class MasterApp(tk.Tk):
     def refresh_dash(self):
         try:
             st = database.get_statistics()
-            self.c_total.config(text=f"{st['total']} ta")
+            total_num = st["total"]
+            self.c_total.config(text=f"{total_num} ta")
+
             cy = str(datetime.now().year)
-            y_cnt = next((cnt for y, cnt in st["years"] if str(y) == cy), 0)
+            y_cnt = 0
+            for y, cnt in st.get("years", []):
+                if str(y) == cy:
+                    y_cnt += cnt
             self.c_year.config(text=f"{y_cnt} ta ({cy})")
 
+            # Hududlar jadvali
             for item in self.tree_reg.get_children():
                 self.tree_reg.delete(item)
-            for r, c in st["regions"]:
-                self.tree_reg.insert("", "end", values=(r.replace("_", " "), f"{c} ta"))
+            for r, c in st.get("regions", []):
+                r_name = str(r).replace("_", " ")
+                self.tree_reg.insert("", "end", values=(r_name, f"{c} ta"))
 
+            # Toifalar jadvali
             for item in self.tree_types.get_children():
                 self.tree_types.delete(item)
-            for t, c in st["types"]:
-                self.tree_types.insert("", "end", values=(t, f"{c} ta"))
-        except Exception:
-            pass
+            for t, c in st.get("types", []):
+                self.tree_types.insert("", "end", values=(str(t), f"{c} ta"))
+
+        except Exception as e:
+            print(f"Dashboard yangilashda xato: {e}")
 
     # --- 2. Hujjat Yuklash & PDF Saralash ---
     def init_upload(self):
@@ -392,7 +408,7 @@ class MasterApp(tk.Tk):
                 full_txt, _ = extract_pdf_data(path)
                 reg, org, d_type, y, m, d, doc_num = analyze_with_ai(full_txt, fname)
 
-                # Faqat PDF-ni Yil/Oy/Hudud/Idora/Toifa bo'yicha saralash
+                # Papkalash: /Arxiv/Yil/Oy/Viloyat/Organ/Toifa/
                 target_dir = os.path.join(config.BASE_DIR, str(y), f"{str(m)}-oy", reg, org, d_type)
                 os.makedirs(target_dir, exist_ok=True)
 
@@ -407,6 +423,9 @@ class MasterApp(tk.Tk):
                 self.log_msg(f"Xato ({fname}): {err}")
 
         self.update_status_ui(f"Tugallandi: {succ}/{tot} ta PDF arxivlandi.", tot)
+        
+        # Dashboardni bir zumda avtomatik yangilash
+        self.after(0, self.refresh_dash)
         self.after(0, lambda: messagebox.showinfo("Bajarildi", f"{succ} ta PDF hujjat muvaffaqiyatli arxivlandi!"))
 
     # --- 3. Explorer ---
@@ -528,6 +547,7 @@ class MasterApp(tk.Tk):
     def reset_db(self):
         if messagebox.askyesno("Tasdiq", "Rostdan ham barcha ma'lumotlar bazasini o'chirmoqchimisiz?"):
             database.clear_all_data()
+            self.refresh_dash()
             messagebox.showinfo("Bajarildi", "Baza tozalandi.")
 
 if __name__ == "__main__":
