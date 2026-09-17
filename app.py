@@ -29,28 +29,53 @@ def extract_pdf_data(pdf_path):
     full_text = ""
     pages_text = []
     try:
+        # 1-bosqich: Oddiy matn sifatida o'qish (pdfplumber)
         with pdfplumber.open(pdf_path) as pdf:
             for page in pdf.pages:
                 txt = page.extract_text() or ""
                 pages_text.append(txt)
                 full_text += txt + "\n"
+
+        # 2-bosqich: Agar matn topilmasa (skaner bo'lsa), PyMuPDF orqali chuqur qatlamni o'qish
+        if not full_text.strip():
+            full_text = ""
+            pages_text = []
+            doc = fitz.open(pdf_path)
+            for page in doc:
+                txt = page.get_text("text") or ""
+                pages_text.append(txt)
+                full_text += txt + "\n"
+
+        # 3-bosqich: Agar mutlaqo matn bo'lmasa (toza rasm/skaner), fayl nomidagi ma'lumotlarni tahlilga berish
+        if not full_text.strip():
+            file_name = os.path.basename(pdf_path)
+            full_text = f"Hujjat fayl nomi: {file_name}. Ushbu hujjat skaner qilingan rasm bo'lib, uning mazmuni va toifasini fayl nomidagi so'zlar va belgilarga qarab aniqlang."
+            pages_text = [f"[Skanerlangan rasm shaklidagi hujjat: {file_name}]"]
+
     except Exception as e:
-        print(f"Xato: {e}")
+        print(f"Xato matn o'qishda: {e}")
+        file_name = os.path.basename(pdf_path)
+        full_text = f"Hujjat fayl nomi: {file_name}"
+        pages_text = [f"Fayl nomi: {file_name}"]
+
     return full_text.strip(), pages_text
 
 def export_pdf_to_word(pages_text, target_docx_path):
-    doc = Document()
-    for idx, page_txt in enumerate(pages_text, 1):
-        doc.add_heading(f"Sahifa {idx}", level=2)
-        doc.add_paragraph(page_txt.strip() if page_txt.strip() else "[Matn aniqlanmadi]")
-        if idx < len(pages_text):
-            doc.add_page_break()
-    doc.save(target_docx_path)
+    try:
+        doc = Document()
+        for idx, page_txt in enumerate(pages_text, 1):
+            doc.add_heading(f"Sahifa {idx}", level=2)
+            doc.add_paragraph(page_txt.strip() if page_txt.strip() else "[Matn aniqlanmadi yoki skaner rasm]")
+            if idx < len(pages_text):
+                doc.add_page_break()
+        doc.save(target_docx_path)
+    except Exception as e:
+        print(f"Word yaratishda xato: {e}")
 
 def analyze_with_ai(text):
     prompt = f"""
-Quyidagi rasmiy hujjat matnini chuqur tahlil qiling va qat'iy quyidagi kalitlar bo'yicha javob bering:
-1. HUDUD: ({', '.join(config.REGIONS)}) orasidan eng mosi.
+Quyidagi rasmiy hujjat matnini yoki nomini tahlil qiling va qat'iy quyidagi kalitlar bo'yicha javob bering:
+1. HUDUD: ({', '.join(config.REGIONS)}) orasidan eng mosi. Agar aniq bo'lmasa: Toshkent_shahri
 2. TASHKILOT: (Kadastr_Agentligi, Davlat_Kadastrlari_Palatasi, Bosh_Prokuratura, IIV, DXX, Sudlar, Boshqa_Organlar)
 3. TUR: (Buyruqlar, Topshiriqlar, Xatlar, Taqdimnomalar, Arizalar, Boshqa)
 4. SANA: Hujjat qabul qilingan sana (Format: YYYY-MM-DD. Agar topilmasa: {datetime.now().strftime('%Y-%m-%d')})
@@ -86,7 +111,6 @@ Hujjat matni:
                     if val:
                         data[k] = val
 
-        # Sanani tekshirish
         sana_match = re.search(r"(\d{4})-(\d{2})-(\d{2})", data["SANA"])
         if sana_match:
             year, month, day = sana_match.groups()
@@ -112,11 +136,9 @@ class ModernPDFViewer(tk.Toplevel):
         self.current_page = 0
         self.zoom = 1.15
 
-        # PanedWindow: Chapda PDF, O'ngda Chat
         paned = tk.PanedWindow(self, orient="horizontal", bg="#1e293b", sashwidth=4)
         paned.pack(fill="both", expand=True)
 
-        # Chap: PDF
         left_frame = tk.Frame(paned, bg="#0f172a")
         paned.add(left_frame, minsize=700)
 
@@ -134,7 +156,6 @@ class ModernPDFViewer(tk.Toplevel):
         sc.pack(side="right", fill="y")
         self.canvas.pack(fill="both", expand=True)
 
-        # O'ng: Chat with Document
         right_frame = tk.Frame(paned, bg="#0f172a", padx=10, pady=10)
         paned.add(right_frame, minsize=400)
 
@@ -186,7 +207,6 @@ class ModernPDFViewer(tk.Toplevel):
             return
         self.chat_entry.delete(0, "end")
         self.append_chat(f"Siz: {query}\n")
-
         threading.Thread(target=self.query_ai_bg, args=(query,), daemon=True).start()
 
     def query_ai_bg(self, query):
@@ -264,7 +284,7 @@ class MasterApp(tk.Tk):
         cards = tk.Frame(self.tab_dash, bg="#0f172a", padx=20)
         cards.pack(fill="x")
         self.c_total = self.build_card(cards, "JAMI ARXIVLANIGAN", "0 ta", "#0284c7", 0)
-        self.c_year = self.build_card(cards, "JOVIY YIL BO'YICHA", "0 ta", "#0d9488", 1)
+        self.c_year = self.build_card(cards, "JORIY YIL BO'YICHA", "0 ta", "#0d9488", 1)
         self.c_types = self.build_card(cards, "HUJJAT TURLARI", f"{len(config.DOC_TYPES)} toifa", "#7c3aed", 2)
 
         mid = tk.Frame(self.tab_dash, bg="#0f172a", padx=20, pady=15)
@@ -330,7 +350,6 @@ class MasterApp(tk.Tk):
         self.txt_status = tk.StringVar(value="Tizim tayyor holatda.")
         tk.Label(f, textvariable=self.txt_status, font=("Segoe UI", 11), fg="#38bdf8", bg="#0f172a").pack(anchor="w")
 
-        # Log Oynasi
         tk.Label(f, text="Amallar jurnali (Log):", font=("Segoe UI", 10, "bold"), fg="#94a3b8", bg="#0f172a").pack(anchor="w", pady=(20, 5))
         self.log_box = tk.Text(f, bg="#1e293b", fg="#e2e8f0", height=12, font=("Consolas", 9), relief="flat")
         self.log_box.pack(fill="x")
@@ -364,51 +383,45 @@ class MasterApp(tk.Tk):
             self.txt_status.set(f"[{i}/{tot}] Tahlil va konvertatsiya: {fname}")
             self.log_msg(f"Fayl boshlandi: {fname}")
 
-            # 1. Hesh & Dublikat
+            # 1. Hesh & Dublikat tekshiruvi
             f_hash = calculate_md5(path)
             dup = database.is_duplicate(f_hash)
             if dup:
-                self.log_msg(f"DIQQAT: Ushbu fayl avval arxivlangan! ({dup[1]}). O'tkazib yuborildi.")
+                self.log_msg(f"OGOHLANTIRISH: {fname} avval yuklangan ({dup[1]}). O'tkazib yuborildi.")
                 self.pbar["value"] = i
                 continue
 
-            # 2. Matn & AI
+            # 2. Matn olish & AI tahlil
             full_txt, pages = extract_pdf_data(path)
-            if not full_txt:
-                self.log_msg(f"Xatolik: {fname} ichida matn topilmadi.")
-                self.pbar["value"] = i
-                continue
-
             reg, org, d_type, y, m, d, doc_num = analyze_with_ai(full_txt)
 
-            # 3. Sana va vaqt bo'yicha dinamik papka:
-            # Manzil: /Arxiv/Yil/Oy/Viloyat/Tashkilot/Toifa/
+            # 3. Yil / Oy / Hudud / Tashkilot / Tur bo'yicha papkalash
             target_dir = os.path.join(config.BASE_DIR, str(y), f"{str(m)}-oy", reg, org, d_type)
             os.makedirs(target_dir, exist_ok=True)
 
-            # Fayllarni nusxalash (PDF + Word)
+            # PDF ni ko'chirish
             dest_pdf = os.path.join(target_dir, fname)
             shutil.copy2(path, dest_pdf)
 
-            # Word (.docx) varianti avtomatik yaratiladi
+            # Avtomatik Word (.docx) nusxa yaratish
             word_name = os.path.splitext(fname)[0] + "_nusxa.docx"
             dest_word = os.path.join(target_dir, word_name)
             export_pdf_to_word(pages, dest_word)
 
+            # Bazaga yozish
             database.save_document_record(fname, dest_pdf, y, m, d, reg, org, d_type, doc_num, f_hash, full_txt)
-            self.log_msg(f"Muvaffaqiyatli: {y}/{m}-oy/{reg} papkasiga joylandi va Word yaratildi.")
+            self.log_msg(f"Muvaffaqiyatli: {y}/{m}-oy/{reg}/{d_type} papkasiga joylandi va Word yaratildi.")
             succ += 1
             self.pbar["value"] = i
 
         self.txt_status.set(f"Jarayon yakunlandi: {succ}/{tot} ta hujjat muvaffaqiyatli arxivlandi.")
-        messagebox.showinfo("Tayyor", f"{succ} ta hujjat arxivlandi va Word versiyalari saqlandi!")
+        messagebox.showinfo("Tayyor", f"{succ} ta hujjat arxivlandi va Word nusxalari yaratildi!")
 
     # --- 3. Arxiv Explorer ---
     def init_explorer(self):
         paned = tk.PanedWindow(self.tab_explorer, orient="horizontal", bg="#0f172a", sashwidth=4)
         paned.pack(fill="both", expand=True, padx=15, pady=15)
 
-        # Chap: Iyerarxiya
         left = tk.Frame(paned, bg="#1e293b")
         paned.add(left, minsize=350)
         tk.Label(left, text="Vaqtli va Hududiy Papkalar Zanjiri", font=("Segoe UI", 11, "bold"), fg="#38bdf8", bg="#1e293b", pady=8).pack(anchor="w", padx=10)
@@ -417,10 +430,9 @@ class MasterApp(tk.Tk):
         self.exp_tree.pack(fill="both", expand=True, padx=5, pady=5)
         self.exp_tree.bind("<<TreeviewSelect>>", self.on_exp_select)
 
-        # O'ng: Hujjatlar
         right = tk.Frame(paned, bg="#1e293b")
         paned.add(right, minsize=650)
-        tk.Label(right, text="Papka tarkibi (PDF ustiga 2 marta bossangiz ochiladi)", font=("Segoe UI", 11, "bold"), fg="#38bdf8", bg="#1e293b", pady=8).pack(anchor="w", padx=10)
+        tk.Label(right, text="Papka tarkibi (PDF ustiga 2 marta bossangiz viewer ochiladi)", font=("Segoe UI", 11, "bold"), fg="#38bdf8", bg="#1e293b", pady=8).pack(anchor="w", padx=10)
 
         self.exp_files = ttk.Treeview(right, columns=("Nom", "Format", "Hajm", "Path"), show="headings")
         self.exp_files.heading("Nom", text="Hujjat Nomi")
