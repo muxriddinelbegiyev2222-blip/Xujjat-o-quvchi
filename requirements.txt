@@ -1,3 +1,5 @@
 pdfplumber
 ollama
 pyinstaller
+PyMuPDF
+Pillow
