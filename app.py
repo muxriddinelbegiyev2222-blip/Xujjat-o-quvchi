@@ -42,7 +42,7 @@ Hujjat matni:
 """
     try:
         response = ollama.chat(
-            model="llama3",
+            model="llama3.2:1b",
             messages=[{"role": "user", "content": prompt}]
         )
         ans = response["message"]["content"].strip().split("\n")
