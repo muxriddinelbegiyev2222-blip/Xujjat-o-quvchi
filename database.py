@@ -18,7 +18,7 @@ def init_db():
             organization TEXT,
             doc_type TEXT,
             doc_number TEXT,
-            file_hash TEXT UNIQUE,
+            file_hash TEXT,
             saved_date TEXT,
             content TEXT
         )
@@ -27,6 +27,8 @@ def init_db():
     conn.close()
 
 def is_duplicate(file_hash):
+    if not file_hash:
+        return None
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("SELECT id, file_name, file_path FROM documents WHERE file_hash = ?", (file_hash,))
@@ -39,10 +41,10 @@ def save_document_record(file_name, file_path, year, month, day, region, org, do
     cursor = conn.cursor()
     saved_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     cursor.execute("""
-        INSERT OR REPLACE INTO documents 
+        INSERT INTO documents 
         (file_name, file_path, doc_year, doc_month, doc_day, region, org, doc_type, doc_number, file_hash, saved_date, content)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (file_name, file_path, year, month, day, region, org, doc_type, doc_num, file_hash, saved_date, content))
+    """, (file_name, file_path, str(year), str(month), str(day), region, org, doc_type, doc_num, file_hash, saved_date, content[:5000]))
     conn.commit()
     conn.close()
     return saved_date
