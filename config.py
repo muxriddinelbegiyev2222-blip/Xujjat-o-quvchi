@@ -1,25 +1,29 @@
-# config.py
+import os
+
+BASE_DIR = "Arxiv"
 
 REGIONS = [
     "Toshkent_shahri",
-    "Qoraqalpogiston_Respublikasi",
+    "Toshkent_viloyati",
     "Andijon_viloyati",
     "Buxoro_viloyati",
-    "Jizzax_viloyati",
-    "Qashqadaryo_viloyati",
-    "Navoiy_viloyati",
-    "Namangan_viloyati",
-    "Samarqand_viloyati",
-    "Surxondaryo_viloyati",
-    "Sirdaryo_viloyati",
-    "Toshkent_viloyati",
     "Fargona_viloyati",
-    "Xorazm_viloyati"
+    "Jizzax_viloyati",
+    "Xorazm_viloyati",
+    "Namangan_viloyati",
+    "Navoiy_viloyati",
+    "Qashqadaryo_viloyati",
+    "Qoraqalpogiston_Respublikasi",
+    "Samarqand_viloyati",
+    "Sirdaryo_viloyati",
+    "Surxondaryo_viloyati"
 ]
 
 ORGANIZATIONS = [
     "Kadastr_Agentligi",
-    "Davlat_Kadastrlari_Palatasi"
+    "Davlat_Kadastrlari_Palatasi",
+    "Bosh_Boshqarma",
+    "Boshqa_Tashkilotlar"
 ]
 
 LAW_ENFORCEMENT = [
@@ -35,8 +39,10 @@ DOC_TYPES = [
     "Topshiriqlar",
     "Xatlar",
     "Taqdimnomalar",
+    "Bildirishnomalar",
+    "Malumotnomalar",
     "Arizalar",
+    "Qarorlar",
+    "Bayonnomalar",
     "Boshqa"
 ]
-
-BASE_DIR = "Arxiv_Baza"
