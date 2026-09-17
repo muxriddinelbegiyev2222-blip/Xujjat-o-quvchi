@@ -3,3 +3,4 @@ ollama
 pyinstaller
 PyMuPDF
 Pillow
+python-docx
